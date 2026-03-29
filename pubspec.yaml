@@ -1,0 +1,33 @@
+name: mercado
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  mobile_scanner: ^5.0.0
+  http: ^1.2.0
+  html: ^0.15.4
+  sqflite: ^2.3.0
+  path: ^1.9.0
+  fl_chart: ^0.68.0
+  provider: ^6.1.2
+  intl: ^0.19.0
+  uuid: ^4.3.3
+  pocketbase: ^0.18.0
+  image_picker: ^1.2.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.5.4
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

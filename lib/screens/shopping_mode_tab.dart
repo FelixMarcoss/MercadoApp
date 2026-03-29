@@ -1,0 +1,324 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+
+import 'package:provider/provider.dart';
+
+import '../models/product.dart';
+import '../providers/app_state.dart';
+import '../widgets/product_chart_modal.dart';
+
+class ShoppingModeTab extends StatefulWidget {
+  final String searchQuery;
+  const ShoppingModeTab({super.key, this.searchQuery = ''});
+
+  @override
+  State<ShoppingModeTab> createState() => _ShoppingModeTabState();
+}
+
+class _ShoppingModeTabState extends State<ShoppingModeTab> {
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _priceCtrl = TextEditingController();
+  final TextEditingController _qtyCtrl = TextEditingController(text: '1');
+
+  final NumberFormat _currencyFormat = NumberFormat.currency(
+    locale: 'pt_BR',
+    symbol: 'R\$',
+  );
+
+  void _addItem() {
+    final String name = _nameCtrl.text.trim();
+    final double price = double.tryParse(_priceCtrl.text.replaceAll(',', '.')) ?? 0.0;
+    final double qty = double.tryParse(_qtyCtrl.text.replaceAll(',', '.')) ?? 1.0;
+
+    if (name.isEmpty || price <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Por favor, insira um nome e preço válidos.'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final appState = Provider.of<AppState>(context, listen: false);
+
+    appState.addLiveCartItem(
+      Product(
+        purchaseId: -1, // Not saved to DB
+        name: name,
+        quantity: qty,
+        unitType: 'un',
+        unitPrice: price,
+        totalPrice: price * qty,
+      ),
+    );
+
+    setState(() {
+      // Keep qty as 1, clear others
+      _nameCtrl.clear();
+      _priceCtrl.clear();
+    });
+  }
+
+  void _removeItem(Product product) {
+    Provider.of<AppState>(context, listen: false).removeLiveCartProduct(product);
+  }
+
+  void _clearCart() {
+    Provider.of<AppState>(context, listen: false).clearLiveCart();
+  }
+
+  void _showHistoryModal(BuildContext context, String productName) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return ProductChartModal(
+          productName: productName,
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    final _liveCartOriginal = appState.liveCart;
+    final _liveCart = widget.searchQuery.isEmpty 
+        ? _liveCartOriginal 
+        : _liveCartOriginal.where((p) => p.name.toLowerCase().contains(widget.searchQuery)).toList();
+    final double totalCart = appState.liveCartTotal;
+
+    return Column(
+      children: [
+        // Input Form
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.grey.shade50,
+          child: Column(
+            children: [
+              Autocomplete<Product>(
+                optionsBuilder: (TextEditingValue textEditingValue) {
+                  if (textEditingValue.text.isEmpty) {
+                    return const Iterable<Product>.empty();
+                  }
+                  final query = textEditingValue.text.toLowerCase();
+                  final appState = Provider.of<AppState>(context, listen: false);
+
+                  // Extract unique product names to avoid duplicates if user bought it multiple times
+                  final Map<String, Product> uniqueProducts = {};
+                  for (var product in appState.latestProducts) {
+                    if (product.name.toLowerCase().contains(query)) {
+                      // Keep only the first occurrence (usually the most recent due to SQL ORDER bypass)
+                      // Ideally latestProducts is already grouped by name via the DB query.
+                      uniqueProducts.putIfAbsent(product.name, () => product);
+                    }
+                  }
+                  return uniqueProducts.values;
+                },
+                displayStringForOption: (Product option) => option.name,
+                onSelected: (Product selection) {
+                  _nameCtrl.text = selection.name;
+                  _priceCtrl.text = selection.unitPrice.toStringAsFixed(2).replaceAll('.', ',');
+                },
+                fieldViewBuilder: (
+                  BuildContext context,
+                  TextEditingController fieldTextEditingController,
+                  FocusNode fieldFocusNode,
+                  VoidCallback onFieldSubmitted,
+                ) {
+                  // We need to keep our own _nameCtrl updated, or just use this one.
+                  // For simplicity, let's sync them:
+                  fieldTextEditingController.addListener(() {
+                    _nameCtrl.text = fieldTextEditingController.text;
+                  });
+                  // If we use the field generated by Autocomplete:
+                  return TextField(
+                    controller: fieldTextEditingController,
+                    focusNode: fieldFocusNode,
+                    decoration: const InputDecoration(
+                      labelText: 'Nome do Produto',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.search), // Changed to search icon as requested
+                    ),
+                  );
+                },
+                optionsViewBuilder: (context, onSelected, options) {
+                  return Align(
+                    alignment: Alignment.topLeft,
+                    child: Material(
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      child: SizedBox(
+                        width: MediaQuery.of(context).size.width - 32, // Adjust width
+                        height: 200,
+                        child: ListView.builder(
+                          padding: EdgeInsets.zero,
+                          itemCount: options.length,
+                          itemBuilder: (BuildContext context, int index) {
+                            final Product option = options.elementAt(index);
+                            return ListTile(
+                              leading: const Icon(Icons.history, color: Colors.grey),
+                              title: Text(option.name),
+                              trailing: Text(
+                                NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$')
+                                    .format(option.unitPrice),
+                                style: TextStyle(color: Colors.deepOrange.shade500),
+                              ),
+                              onTap: () {
+                                onSelected(option);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: TextField(
+                      controller: _priceCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Preço (R\$)',
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.attach_money),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 1,
+                    child: TextField(
+                      controller: _qtyCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Qtd',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _addItem,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Adicionar ao Carrinho', style: TextStyle(fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepOrange,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        // List of items
+        Expanded(
+          child: _liveCart.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.shopping_basket_outlined, size: 80, color: Colors.grey.shade300),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Carrinho vazio',
+                        style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _liveCart.length,
+                  itemBuilder: (context, index) {
+                    final item = _liveCart[index];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text('${item.quantity} x ${_currencyFormat.format(item.unitPrice)}'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _currencyFormat.format(item.totalPrice),
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.deepOrange.shade700,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.show_chart, color: Colors.blue),
+                              onPressed: () => _showHistoryModal(context, item.name),
+                              tooltip: 'Ver Histórico',
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              onPressed: () => _removeItem(item),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+
+        // Bottom Total Bar
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(10),
+                blurRadius: 10,
+                offset: const Offset(0, -5),
+              ),
+            ],
+          ),
+          child: SafeArea(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Total do Carrinho', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    Text(
+                      _currencyFormat.format(totalCart),
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+                TextButton.icon(
+                  onPressed: _liveCart.isEmpty ? null : _clearCart,
+                  icon: const Icon(Icons.delete_sweep, color: Colors.red),
+                  label: const Text('Limpar', style: TextStyle(color: Colors.red)),
+                )
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
