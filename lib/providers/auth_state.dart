@@ -56,9 +56,9 @@ class AuthState extends ChangeNotifier {
     });
   }
 
-  Future<bool> register(String email, String password) async {
+  Future<bool> register(String name, String email, String password) async {
     return _run(() async {
-      final record = await _authService.register(email.trim(), password);
+      final record = await _authService.register(name, email.trim(), password);
       _userId = record.id;
       _userEmail = record.getStringValue('email');
       _status = AuthStatus.authenticated;

@@ -1,6 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-
 import 'package:provider/provider.dart';
 
 import '../models/product.dart';
@@ -8,57 +8,75 @@ import '../providers/app_state.dart';
 import '../widgets/product_chart_modal.dart';
 
 class ShoppingModeTab extends StatefulWidget {
-  final String searchQuery;
-  const ShoppingModeTab({super.key, this.searchQuery = ''});
+  const ShoppingModeTab({super.key});
 
   @override
   State<ShoppingModeTab> createState() => _ShoppingModeTabState();
 }
 
 class _ShoppingModeTabState extends State<ShoppingModeTab> {
-  final TextEditingController _nameCtrl = TextEditingController();
-  final TextEditingController _priceCtrl = TextEditingController();
-  final TextEditingController _qtyCtrl = TextEditingController(text: '1');
+  final TextEditingController _searchCtrl = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  String _query = '';
 
   final NumberFormat _currencyFormat = NumberFormat.currency(
     locale: 'pt_BR',
     symbol: 'R\$',
   );
 
-  void _addItem() {
-    final String name = _nameCtrl.text.trim();
-    final double price = double.tryParse(_priceCtrl.text.replaceAll(',', '.')) ?? 0.0;
-    final double qty = double.tryParse(_qtyCtrl.text.replaceAll(',', '.')) ?? 1.0;
-
-    if (name.isEmpty || price <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Por favor, insira um nome e preço válidos.'), backgroundColor: Colors.red),
-      );
-      return;
-    }
-
-    final appState = Provider.of<AppState>(context, listen: false);
-
-    appState.addLiveCartItem(
-      Product(
-        purchaseId: -1, // Not saved to DB
-        name: name,
-        quantity: qty,
-        unitType: 'un',
-        unitPrice: price,
-        totalPrice: price * qty,
-      ),
-    );
-
-    setState(() {
-      // Keep qty as 1, clear others
-      _nameCtrl.clear();
-      _priceCtrl.clear();
+  @override
+  void initState() {
+    super.initState();
+    _searchCtrl.addListener(() {
+      setState(() {
+        _query = _searchCtrl.text.trim().toLowerCase();
+      });
     });
   }
 
-  void _removeItem(Product product) {
-    Provider.of<AppState>(context, listen: false).removeLiveCartProduct(product);
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
+
+  void _addSuggestedItem(Product suggestion) {
+    final appState = Provider.of<AppState>(context, listen: false);
+    appState.addLiveCartItem(
+      Product(
+        id: -DateTime.now().millisecondsSinceEpoch, // Unique temp Id
+        purchaseId: -1,
+        name: suggestion.name,
+        quantity: 1.0,
+        unitType: suggestion.unitType,
+        unitPrice: suggestion.unitPrice,
+        totalPrice: suggestion.unitPrice,
+        imagePath: suggestion.imagePath,
+      ),
+    );
+    _searchCtrl.clear();
+    _searchFocus.unfocus();
+  }
+
+  void _addNewCustomItem(String name) {
+    final appState = Provider.of<AppState>(context, listen: false);
+    final newItem = Product(
+      id: -DateTime.now().millisecondsSinceEpoch,
+      purchaseId: -1,
+      name: name,
+      quantity: 1.0,
+      unitType: 'un',
+      unitPrice: 0.0,
+      totalPrice: 0.0,
+    );
+    appState.addLiveCartItem(newItem);
+    _searchCtrl.clear();
+    _searchFocus.unfocus();
+    
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) _editPriceModal(newItem);
+    });
   }
 
   void _clearCart() {
@@ -81,244 +99,374 @@ class _ShoppingModeTabState extends State<ShoppingModeTab> {
     );
   }
 
+  void _editPriceModal(Product product) {
+    final TextEditingController pc = TextEditingController(text: product.unitPrice.toStringAsFixed(2).replaceAll('.', ','));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Editar Preço Histórico'),
+        content: TextField(
+          controller: pc,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+             prefixText: 'R\$ '
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          ElevatedButton(
+            onPressed: () {
+               final double newPrice = double.tryParse(pc.text.replaceAll(',', '.')) ?? product.unitPrice;
+               Provider.of<AppState>(context, listen: false).updateLiveCartProductPrice(product, newPrice);
+               Navigator.pop(ctx);
+            }, 
+            child: const Text('Salvar')
+          )
+        ],
+      )
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = Provider.of<AppState>(context);
-    final _liveCartOriginal = appState.liveCart;
-    final _liveCart = widget.searchQuery.isEmpty 
-        ? _liveCartOriginal 
-        : _liveCartOriginal.where((p) => p.name.toLowerCase().contains(widget.searchQuery)).toList();
+    final _liveCart = appState.liveCart;
     final double totalCart = appState.liveCartTotal;
+
+    List<Product> suggestions = [];
+    if (_query.isNotEmpty) {
+      final Map<String, Product> uniqueProducts = {};
+      for (var p in appState.latestProducts) {
+        if (p.name.toLowerCase().contains(_query)) {
+          uniqueProducts.putIfAbsent(p.name, () => p);
+        }
+      }
+      suggestions = uniqueProducts.values.toList(); // Fixed logic based on uniqueness
+    }
 
     return Column(
       children: [
-        // Input Form
-        Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.grey.shade50,
-          child: Column(
-            children: [
-              Autocomplete<Product>(
-                optionsBuilder: (TextEditingValue textEditingValue) {
-                  if (textEditingValue.text.isEmpty) {
-                    return const Iterable<Product>.empty();
-                  }
-                  final query = textEditingValue.text.toLowerCase();
-                  final appState = Provider.of<AppState>(context, listen: false);
-
-                  // Extract unique product names to avoid duplicates if user bought it multiple times
-                  final Map<String, Product> uniqueProducts = {};
-                  for (var product in appState.latestProducts) {
-                    if (product.name.toLowerCase().contains(query)) {
-                      // Keep only the first occurrence (usually the most recent due to SQL ORDER bypass)
-                      // Ideally latestProducts is already grouped by name via the DB query.
-                      uniqueProducts.putIfAbsent(product.name, () => product);
-                    }
-                  }
-                  return uniqueProducts.values;
-                },
-                displayStringForOption: (Product option) => option.name,
-                onSelected: (Product selection) {
-                  _nameCtrl.text = selection.name;
-                  _priceCtrl.text = selection.unitPrice.toStringAsFixed(2).replaceAll('.', ',');
-                },
-                fieldViewBuilder: (
-                  BuildContext context,
-                  TextEditingController fieldTextEditingController,
-                  FocusNode fieldFocusNode,
-                  VoidCallback onFieldSubmitted,
-                ) {
-                  // We need to keep our own _nameCtrl updated, or just use this one.
-                  // For simplicity, let's sync them:
-                  fieldTextEditingController.addListener(() {
-                    _nameCtrl.text = fieldTextEditingController.text;
-                  });
-                  // If we use the field generated by Autocomplete:
-                  return TextField(
-                    controller: fieldTextEditingController,
-                    focusNode: fieldFocusNode,
-                    decoration: const InputDecoration(
-                      labelText: 'Nome do Produto',
-                      border: OutlineInputBorder(),
-                      prefixIcon: Icon(Icons.search), // Changed to search icon as requested
-                    ),
-                  );
-                },
-                optionsViewBuilder: (context, onSelected, options) {
-                  return Align(
-                    alignment: Alignment.topLeft,
-                    child: Material(
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: SizedBox(
-                        width: MediaQuery.of(context).size.width - 32, // Adjust width
-                        height: 200,
-                        child: ListView.builder(
-                          padding: EdgeInsets.zero,
-                          itemCount: options.length,
-                          itemBuilder: (BuildContext context, int index) {
-                            final Product option = options.elementAt(index);
-                            return ListTile(
-                              leading: const Icon(Icons.history, color: Colors.grey),
-                              title: Text(option.name),
-                              trailing: Text(
-                                NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$')
-                                    .format(option.unitPrice),
-                                style: TextStyle(color: Colors.deepOrange.shade500),
-                              ),
-                              onTap: () {
-                                onSelected(option);
-                              },
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  );
-                },
+        _buildHeader(),
+        
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFFEBEBEB),
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: TextField(
+              controller: _searchCtrl,
+              focusNode: _searchFocus,
+              decoration: const InputDecoration(
+                hintText: 'Pesquisar produto...',
+                hintStyle: TextStyle(color: Colors.grey),
+                prefixIcon: Icon(Icons.search, color: Color(0xFF757575)),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 15),
               ),
-              const SizedBox(height: 12),
-              Row(
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        Expanded(
+          child: Stack(
+            children: [
+              ListView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 150),
                 children: [
-                  Expanded(
-                    flex: 2,
-                    child: TextField(
-                      controller: _priceCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'Preço (R\$)',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.attach_money),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 1,
-                    child: TextField(
-                      controller: _qtyCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'Qtd',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ),
+                  if (_query.isNotEmpty) ...[
+                    const Text('Sugestões', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.grey)),
+                    const SizedBox(height: 10),
+                    ...suggestions.map((s) => _buildSuggestionCard(s)).toList(),
+                    _buildCustomAddCard(_query), // Adding custom item option
+                    const Divider(height: 30),
+                  ],
+
+                  if (_liveCart.isEmpty && _query.isEmpty) 
+                     Center(
+                       child: Padding(
+                         padding: const EdgeInsets.only(top: 80),
+                         child: Column(
+                           children: [
+                             Icon(Icons.shopping_basket_outlined, size: 80, color: Colors.grey.shade300),
+                             const SizedBox(height: 16),
+                             const Text('Carrinho vazio', style: TextStyle(color: Colors.grey, fontSize: 16)),
+                           ],
+                         ),
+                       ),
+                     )
+                  else ..._liveCart.map((item) => _buildCartCard(item, appState)).toList()
                 ],
               ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _addItem,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Adicionar ao Carrinho', style: TextStyle(fontWeight: FontWeight.bold)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepOrange,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        
-        // List of items
-        Expanded(
-          child: _liveCart.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.shopping_basket_outlined, size: 80, color: Colors.grey.shade300),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Carrinho vazio',
-                        style: TextStyle(color: Colors.grey, fontSize: 16),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _liveCart.length,
-                  itemBuilder: (context, index) {
-                    final item = _liveCart[index];
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('${item.quantity} x ${_currencyFormat.format(item.unitPrice)}'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              _currencyFormat.format(item.totalPrice),
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.deepOrange.shade700,
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.show_chart, color: Colors.blue),
-                              onPressed: () => _showHistoryModal(context, item.name),
-                              tooltip: 'Ver Histórico',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline, color: Colors.red),
-                              onPressed: () => _removeItem(item),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-        ),
 
-        // Bottom Total Bar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withAlpha(10),
-                blurRadius: 10,
-                offset: const Offset(0, -5),
-              ),
-            ],
-          ),
-          child: SafeArea(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('Total do Carrinho', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                    Text(
-                      _currencyFormat.format(totalCart),
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-                TextButton.icon(
-                  onPressed: _liveCart.isEmpty ? null : _clearCart,
-                  icon: const Icon(Icons.delete_sweep, color: Colors.red),
-                  label: const Text('Limpar', style: TextStyle(color: Colors.red)),
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFF8550),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(30)),
+                    boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -5))]
+                  ),
+                  child: Row(
+                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                     children: [
+                       Column(
+                         crossAxisAlignment: CrossAxisAlignment.start,
+                         children: [
+                           const Text('TOTAL PARCIAL', style: TextStyle(color: Color(0xFF88260E), fontSize: 10, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+                           Text(
+                             _currencyFormat.format(totalCart),
+                             style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: Color(0xFF330C02)),
+                           )
+                         ],
+                       ),
+                       ElevatedButton(
+                         onPressed: _liveCart.isEmpty ? null : _clearCart,
+                         style: ElevatedButton.styleFrom(
+                           backgroundColor: const Color(0xFFAD2D06),
+                           foregroundColor: Colors.white,
+                           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                           elevation: 0
+                         ),
+                         child: const Row(
+                           children: [
+                             Text('Finalizar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                             SizedBox(width: 8),
+                             Icon(Icons.arrow_forward, size: 18)
+                           ],
+                         ),
+                       )
+                     ]
+                  )
                 )
-              ],
-            ),
+              )
+            ],
           ),
         ),
       ],
     );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      color: const Color(0xFFF7F7F7),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+           const CircleAvatar(
+             radius: 20,
+             backgroundColor: Color(0xFFE0E0E0),
+             child: Icon(Icons.person, color: Color(0xFF757575), size: 24),
+           ), 
+           const Text(
+             'MercadoApp',
+             style: TextStyle(
+                color: Color(0xFFD64D24), 
+                fontSize: 22, 
+                fontWeight: FontWeight.w900, 
+                fontStyle: FontStyle.italic,
+             ),
+           ),
+           const Icon(Icons.notifications, color: Colors.grey, size: 28),
+        ],
+      )
+    );
+  }
+
+  Widget _buildSuggestionCard(Product product) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 4))]
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF333333)), overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 4),
+                Text(_currencyFormat.format(product.unitPrice), style: const TextStyle(color: Color(0xFF1E8267), fontWeight: FontWeight.w600, fontSize: 13)),
+              ],
+            ),
+          ),
+          GestureDetector(
+             onTap: () => _addSuggestedItem(product),
+             child: Container(
+               padding: const EdgeInsets.all(4),
+               decoration: const BoxDecoration(
+                  color: Color(0xFFAD2D06),
+                  shape: BoxShape.circle
+               ),
+               child: const Icon(Icons.add, color: Colors.white, size: 20),
+             ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCustomAddCard(String name) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F7F7),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.grey.shade400, width: 1.5), // replaced dashed
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Adicionar novo item:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 4),
+                Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF333333)), overflow: TextOverflow.ellipsis),
+              ],
+            ),
+          ),
+          GestureDetector(
+             onTap: () => _addNewCustomItem(name),
+             child: Container(
+               padding: const EdgeInsets.all(4),
+               decoration: const BoxDecoration(
+                  color: Color(0xFFAD2D06),
+                  shape: BoxShape.circle
+               ),
+               child: const Icon(Icons.add, color: Colors.white, size: 20),
+             ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCartCard(Product item, AppState appState) {
+    return Container(
+       margin: const EdgeInsets.only(bottom: 16),
+       padding: const EdgeInsets.all(12),
+       decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 4))]
+       ),
+       child: Row(
+          children: [
+             Opacity( // Emulate the dark background of placeholder
+               opacity: 0.9,
+               child: ClipRRect(
+                 borderRadius: BorderRadius.circular(16),
+                 child: Container(
+                   width: 70,
+                   height: 70,
+                   color: const Color(0xFF2B3A4A),
+                   child: _buildProductImage(item.imagePath),
+                 ),
+               ),
+             ),
+             const SizedBox(width: 16),
+             Expanded(
+               child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                     Row(
+                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                       crossAxisAlignment: CrossAxisAlignment.start,
+                       children: [
+                         Expanded(
+                           child: Text(
+                             item.name, 
+                             style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: Color(0xFF333333)),
+                             maxLines: 2,
+                             overflow: TextOverflow.ellipsis,
+                           )
+                         ),
+                         Column(
+                           children: [
+                              GestureDetector(
+                                onTap: () => appState.removeLiveCartProduct(item),
+                                child: const Icon(Icons.delete_outline, color: Color(0xFFD36C70), size: 20),
+                              ),
+                              const SizedBox(height: 12),
+                              GestureDetector(
+                                onTap: () => _showHistoryModal(context, item.name),
+                                child: const Icon(Icons.show_chart, color: Colors.grey, size: 20),
+                              )
+                           ],
+                         )
+                       ],
+                     ),
+                     const SizedBox(height: 8),
+                     Row(
+                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                       children: [
+                          Container(
+                             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                             decoration: BoxDecoration(
+                               color: const Color(0xFFF0F0F0),
+                               borderRadius: BorderRadius.circular(20)
+                             ),
+                             child: Row(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => appState.updateLiveCartProductQuantity(item, -1),
+                                    child: const Icon(Icons.remove, size: 16, color: Color(0xFF333333))
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    child: Text(
+                                      item.quantity % 1 == 0 ? item.quantity.toInt().toString() : item.quantity.toStringAsFixed(1),
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)
+                                    ),
+                                  ),
+                                  GestureDetector(
+                                    onTap: () => appState.updateLiveCartProductQuantity(item, 1),
+                                    child: const Icon(Icons.add, size: 16, color: Color(0xFF333333))
+                                  ),
+                                ],
+                             ),
+                          ),
+                          GestureDetector(
+                            onTap: () => _editPriceModal(item),
+                            child: Text(
+                              _currencyFormat.format(item.totalPrice),
+                              style: const TextStyle(color: Color(0xFF1E8267), fontWeight: FontWeight.w900, fontSize: 16),
+                            ),
+                          )
+                       ],
+                     )
+                  ],
+               ),
+             )
+          ],
+       )
+    );
+  }
+
+  Widget _buildProductImage(String? imagePath) {
+    if (imagePath != null && imagePath.isNotEmpty) {
+      final file = File(imagePath);
+      if (file.existsSync()) {
+        return Image.file(file, fit: BoxFit.cover);
+      }
+    }
+    return const Icon(Icons.shopping_bag, color: Colors.white, size: 30);
   }
 }

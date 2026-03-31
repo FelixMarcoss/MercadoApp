@@ -18,16 +18,14 @@ class _ScannerScreenState extends State<ScannerScreen> {
   );
   bool isProcessing = false;
   String processingMessage = 'Processando...';
-  AppState? _appState; // obtido uma vez no initState via contexto válido
-  bool isPublic = true;
+  AppState? _appState;
+  late bool _isAvulsa;
+  bool _isTorchOn = false;
 
   @override
   void initState() {
     super.initState();
-    // Obtemos o AppState aqui, onde o BuildContext ainda é parte do
-    // widget tree correto (dentro do ChangeNotifierProvider<AppState>).
-    // Não pode ser chamado diretamente em initState, por isso usamos
-    // addPostFrameCallback que garante que o contexto está montado.
+    _isAvulsa = widget.isAvulsa;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _appState = Provider.of<AppState>(context, listen: false);
@@ -49,10 +47,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
     if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
       final String url = barcodes.first.rawValue!;
 
-      // Simple validation for sefaz url (basic sanity check)
       if (url.toLowerCase().contains('http')) {
-        // Garantia extra: se _appState ainda não foi inicializado
-        // (ex: callback disparou antes do frame), tenta obtert agora.
         _appState ??= Provider.of<AppState>(context, listen: false);
 
         setState(() {
@@ -63,8 +58,8 @@ class _ScannerScreenState extends State<ScannerScreen> {
         try {
           final success = await _appState!.processQrCode(
             url,
-            isAvulsa: widget.isAvulsa,
-            isPublic: isPublic,
+            isAvulsa: _isAvulsa,
+            isPublic: true,
             onStatus: (msg) {
               if (mounted) {
                 setState(() {
@@ -84,7 +79,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
               );
               Navigator.pop(context); // go back to home
             } else {
-              // Show dialog to force the user to see the error and prevent an infinite fast-scan loop
               await showDialog(
                 context: context,
                 barrierDismissible: false,
@@ -108,7 +102,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
             }
           }
         } catch (e) {
-          // Captura erros que escapariam silenciosamente do callback async
           if (mounted) {
             setState(() { isProcessing = false; });
             ScaffoldMessenger.of(context).showSnackBar(
@@ -130,73 +123,261 @@ class _ScannerScreenState extends State<ScannerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ler QR Code', style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.black54,
-        actions: [
+      backgroundColor: const Color(0xFFF7F7F7),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(),
+            Expanded(
+              child: Stack(
+                children: [
+                  MobileScanner(controller: controller, onDetect: _onDetect),
+                  
+                  // Camera Overlay
+                  Container(
+                    decoration: ShapeDecoration(
+                      shape: QrScannerOverlayShape(
+                        borderColor: const Color(0xFFD64D24), // Orange like design
+                        borderRadius: 16,
+                        borderLength: 40,
+                        borderWidth: 4,
+                        cutOutSize: MediaQuery.of(context).size.width * 0.75,
+                      ),
+                    ),
+                  ),
+
+                  // Flashlight Button
+                  Positioned(
+                    top: 24,
+                    right: 24,
+                    child: GestureDetector(
+                      onTap: () {
+                        controller.toggleTorch();
+                        setState(() {
+                           _isTorchOn = !_isTorchOn;
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withAlpha(150),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          _isTorchOn ? Icons.flash_on : Icons.flashlight_on, // Fixed icon
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  if (isProcessing)
+                    Container(
+                      color: Colors.black.withAlpha(200),
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(color: Color(0xFFD64D24)),
+                            const SizedBox(height: 16),
+                            Text(
+                              processingMessage,
+                              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            _buildBottomSheet(),
+          ],
+        ),
+      ),
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      color: const Color(0xFFF7F7F7),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+           GestureDetector(
+             onTap: () => Navigator.pop(context), // Acts as back button implicitly since it's pushed
+             child: const CircleAvatar(
+               radius: 20,
+               backgroundColor: Color(0xFFE0E0E0),
+               child: Icon(Icons.person, color: Color(0xFF757575), size: 24),
+             ),
+           ),
+           const Text(
+             'MercadoApp',
+             style: TextStyle(
+                color: Color(0xFFD64D24), 
+                fontSize: 22, 
+                fontWeight: FontWeight.w900, 
+                fontStyle: FontStyle.italic,
+             ),
+           ),
+           const Icon(Icons.notifications, color: Colors.grey, size: 28),
+        ],
+      )
+    );
+  }
+
+  Widget _buildBottomSheet() {
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        color: Color(0xFFE2E2E2),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Drag handle
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.withAlpha(100),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                isPublic ? 'Público' : 'Privado',
-                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                   const Text(
+                     'Tipo de Compra', 
+                     style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: Color(0xFF333333)),
+                   ),
+                   const SizedBox(height: 4),
+                   const Text(
+                     'Categorize seu gasto automaticamente', 
+                     style: TextStyle(color: Color(0xFF757575), fontSize: 13),
+                   ),
+                ],
               ),
-              Switch(
-                value: isPublic,
-                activeColor: Colors.green,
-                inactiveThumbColor: Colors.grey,
-                onChanged: (val) {
-                  setState(() {
-                    isPublic = val;
-                  });
-                },
-              ),
+              const Icon(Icons.category, color: Color(0xFFD64D24)),
             ],
           ),
+          const SizedBox(height: 24),
+          // Segmented Control
+          Container(
+             padding: const EdgeInsets.all(4),
+             decoration: BoxDecoration(
+               color: const Color(0xFFF5F5F5),
+               borderRadius: BorderRadius.circular(30),
+             ),
+             child: Row(
+                children: [
+                   Expanded(
+                     child: GestureDetector(
+                       onTap: () => setState(() => _isAvulsa = false),
+                       child: Container(
+                         padding: const EdgeInsets.symmetric(vertical: 14),
+                         decoration: BoxDecoration(
+                           color: !_isAvulsa ? const Color(0xFFB93315) : Colors.transparent,
+                           borderRadius: BorderRadius.circular(26),
+                         ),
+                         child: Center(
+                           child: Text(
+                             'Compra do Mês',
+                             style: TextStyle(
+                               fontWeight: FontWeight.bold,
+                               color: !_isAvulsa ? Colors.white : const Color(0xFF757575),
+                             ),
+                           ),
+                         ),
+                       ),
+                     ),
+                   ),
+                   Expanded(
+                     child: GestureDetector(
+                       onTap: () => setState(() => _isAvulsa = true),
+                       child: Container(
+                         padding: const EdgeInsets.symmetric(vertical: 14),
+                         decoration: BoxDecoration(
+                           color: _isAvulsa ? const Color(0xFFB93315) : Colors.transparent,
+                           borderRadius: BorderRadius.circular(26),
+                         ),
+                         child: Center(
+                           child: Text(
+                             'Ocasional',
+                             style: TextStyle(
+                               fontWeight: FontWeight.bold,
+                               color: _isAvulsa ? Colors.white : const Color(0xFF757575),
+                             ),
+                           ),
+                         ),
+                       ),
+                     ),
+                   ),
+                ],
+             ),
+          ),
+        ],
+      )
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        boxShadow: [
+          BoxShadow(
+             color: Colors.black.withAlpha(10),
+             blurRadius: 20,
+             offset: const Offset(0, -5),
+          )
         ],
       ),
-      extendBodyBehindAppBar: true,
-      body: Stack(
-        children: [
-          MobileScanner(controller: controller, onDetect: _onDetect),
-
-          // Overlay overlay to guide user
-          Container(
-            decoration: ShapeDecoration(
-              shape: QrScannerOverlayShape(
-                borderColor: Colors.green,
-                borderRadius: 10,
-                borderLength: 30,
-                borderWidth: 10,
-                cutOutSize: MediaQuery.of(context).size.width * 0.7,
-              ),
-            ),
-          ),
-
-          if (isProcessing)
-            Container(
-              color: Colors.black54,
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(color: Colors.white),
-                    const SizedBox(height: 16),
-                    Text(
-                      processingMessage,
-                      style: const TextStyle(color: Colors.white, fontSize: 18),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        child: BottomNavigationBar(
+          currentIndex: 1, // Fix on scanner
+          onTap: (index) {
+            if (index != 1) {
+               // Popping the scanner screen automatically goes back to the home screen
+               Navigator.pop(context);
+            }
+          },
+          type: BottomNavigationBarType.fixed,
+          backgroundColor: Colors.white,
+          selectedItemColor: const Color(0xFFD64D24),
+          unselectedItemColor: const Color(0xFF9E9E9E),
+          showSelectedLabels: true,
+          showUnselectedLabels: true,
+          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, height: 1.5),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, height: 1.5),
+          elevation: 0,
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.home_filled, size: 26), label: 'HOME'),
+            BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner, size: 26), label: 'SCAN'),
+            BottomNavigationBarItem(icon: Icon(Icons.shopping_cart, size: 26), label: 'CART'),
+            BottomNavigationBarItem(icon: Icon(Icons.history, size: 26), label: 'HISTORY'),
+          ],
+        ),
       ),
     );
   }
 }
 
-// Custom shape to draw the scanner transparent box
 class QrScannerOverlayShape extends ShapeBorder {
   final Color borderColor;
   final double borderWidth;
@@ -208,7 +389,7 @@ class QrScannerOverlayShape extends ShapeBorder {
   const QrScannerOverlayShape({
     this.borderColor = Colors.red,
     this.borderWidth = 3.0,
-    this.overlayColor = 150, // Alpha
+    this.overlayColor = 150,
     this.borderRadius = 0,
     this.borderLength = 40,
     this.cutOutSize = 250,
@@ -251,7 +432,9 @@ class QrScannerOverlayShape extends ShapeBorder {
     final borderPaint = Paint()
       ..color = borderColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = borderWidth;
+      ..strokeWidth = borderWidth
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
 
     final cutOutRect = Rect.fromCenter(
       center: rect.center,
@@ -261,48 +444,39 @@ class QrScannerOverlayShape extends ShapeBorder {
 
     canvas.drawPath(getOuterPath(rect), backgroundPaint);
 
-    // Draw borders at the corners
     final rrect = RRect.fromRectAndRadius(
       cutOutRect,
       Radius.circular(borderRadius),
     );
 
-    final topLeft = Offset(rrect.left, rrect.top);
-    final topRight = Offset(rrect.right, rrect.top);
-    final bottomLeft = Offset(rrect.left, rrect.bottom);
-    final bottomRight = Offset(rrect.right, rrect.bottom);
+    // Using drawArc and drawLine to draw rounded corner reticles
+    // Top-Left
+    canvas.drawArc(
+        Rect.fromCircle(center: Offset(rrect.left + borderRadius, rrect.top + borderRadius), radius: borderRadius),
+        -3.14159, 1.5708, false, borderPaint);
+    canvas.drawLine(Offset(rrect.left, rrect.top + borderRadius), Offset(rrect.left, rrect.top + borderLength), borderPaint);
+    canvas.drawLine(Offset(rrect.left + borderRadius, rrect.top), Offset(rrect.left + borderLength, rrect.top), borderPaint);
 
-    // Top-left
-    canvas.drawLine(topLeft, topLeft + Offset(borderLength, 0), borderPaint);
-    canvas.drawLine(topLeft, topLeft + Offset(0, borderLength), borderPaint);
+    // Top-Right
+    canvas.drawArc(
+        Rect.fromCircle(center: Offset(rrect.right - borderRadius, rrect.top + borderRadius), radius: borderRadius),
+        -1.5708, 1.5708, false, borderPaint);
+    canvas.drawLine(Offset(rrect.right, rrect.top + borderRadius), Offset(rrect.right, rrect.top + borderLength), borderPaint);
+    canvas.drawLine(Offset(rrect.right - borderRadius, rrect.top), Offset(rrect.right - borderLength, rrect.top), borderPaint);
 
-    // Top-right
-    canvas.drawLine(topRight, topRight + Offset(-borderLength, 0), borderPaint);
-    canvas.drawLine(topRight, topRight + Offset(0, borderLength), borderPaint);
+    // Bottom-Left
+    canvas.drawArc(
+        Rect.fromCircle(center: Offset(rrect.left + borderRadius, rrect.bottom - borderRadius), radius: borderRadius),
+        1.5708, 1.5708, false, borderPaint);
+    canvas.drawLine(Offset(rrect.left, rrect.bottom - borderRadius), Offset(rrect.left, rrect.bottom - borderLength), borderPaint);
+    canvas.drawLine(Offset(rrect.left + borderRadius, rrect.bottom), Offset(rrect.left + borderLength, rrect.bottom), borderPaint);
 
-    // Bottom-left
-    canvas.drawLine(
-      bottomLeft,
-      bottomLeft + Offset(borderLength, 0),
-      borderPaint,
-    );
-    canvas.drawLine(
-      bottomLeft,
-      bottomLeft + Offset(0, -borderLength),
-      borderPaint,
-    );
-
-    // Bottom-right
-    canvas.drawLine(
-      bottomRight,
-      bottomRight + Offset(-borderLength, 0),
-      borderPaint,
-    );
-    canvas.drawLine(
-      bottomRight,
-      bottomRight + Offset(0, -borderLength),
-      borderPaint,
-    );
+    // Bottom-Right
+    canvas.drawArc(
+        Rect.fromCircle(center: Offset(rrect.right - borderRadius, rrect.bottom - borderRadius), radius: borderRadius),
+        0, 1.5708, false, borderPaint);
+    canvas.drawLine(Offset(rrect.right, rrect.bottom - borderRadius), Offset(rrect.right, rrect.bottom - borderLength), borderPaint);
+    canvas.drawLine(Offset(rrect.right - borderRadius, rrect.bottom), Offset(rrect.right - borderLength, rrect.bottom), borderPaint);
   }
 
   @override

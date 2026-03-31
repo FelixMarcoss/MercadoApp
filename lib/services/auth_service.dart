@@ -25,10 +25,11 @@ class AuthService {
   }
 
   /// Creates a new user account and logs them in.
-  Future<RecordModel> register(String email, String password) async {
+  Future<RecordModel> register(String name, String email, String password) async {
     final String projectId = 'g3bdrn2mshazsyq'; // ID fixo do projeto 'Aplicativo Compras'
 
     await pb.collection('compras_users').create(body: {
+      'name': name,
       'email': email,
       'password': password,
       'passwordConfirm': password,

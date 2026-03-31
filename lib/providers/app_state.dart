@@ -88,6 +88,49 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateLiveCartProductQuantity(Product product, double delta) {
+    final index = _liveCart.indexOf(product);
+    if (index != -1) {
+      final newQty = product.quantity + delta;
+      if (newQty <= 0) {
+        _liveCart.removeAt(index);
+      } else {
+        _liveCart[index] = Product(
+          id: product.id,
+          purchaseId: product.purchaseId,
+          name: product.name,
+          quantity: newQty,
+          unitType: product.unitType,
+          unitPrice: product.unitPrice,
+          totalPrice: newQty * product.unitPrice,
+          isAvulsa: product.isAvulsa,
+          imagePath: product.imagePath,
+          date: product.date,
+        );
+      }
+      notifyListeners();
+    }
+  }
+
+  void updateLiveCartProductPrice(Product product, double newPrice) {
+    final index = _liveCart.indexOf(product);
+    if (index != -1) {
+      _liveCart[index] = Product(
+        id: product.id,
+        purchaseId: product.purchaseId,
+        name: product.name,
+        quantity: product.quantity,
+        unitType: product.unitType,
+        unitPrice: newPrice,
+        totalPrice: product.quantity * newPrice,
+        isAvulsa: product.isAvulsa,
+        imagePath: product.imagePath,
+        date: product.date,
+      );
+      notifyListeners();
+    }
+  }
+
   void clearLiveCart() {
     _liveCart.clear();
     notifyListeners();

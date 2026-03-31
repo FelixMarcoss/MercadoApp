@@ -23,6 +23,10 @@ dependencies:
   path_provider: ^2.1.5
   shared_preferences: ^2.5.4
   google_fonts: ^6.2.1
+  dio: ^5.9.2
+  package_info_plus: ^9.0.0
+  open_filex: ^4.7.0
+  version: ^3.0.2
 
 dev_dependencies:
   flutter_test:

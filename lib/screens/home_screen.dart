@@ -10,6 +10,7 @@ import '../widgets/product_chart_modal.dart';
 import 'scanner_screen.dart';
 import 'shopping_mode_tab.dart';
 import '../database/database_helper.dart';
+import '../services/update_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,19 +19,22 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+  int _currentIndex = 0;
   bool _isSearching = false;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
+  late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
-      setState(() {});
+      if (_currentIndex == 3) setState(() {});
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      UpdateService.checkForUpdates(context);
     });
   }
 
@@ -41,547 +45,658 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
+  String _getMonthName(int month) {
+    const months = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+    return months[month - 1];
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final NumberFormat currencyFormat = NumberFormat.currency(
-      locale: 'pt_BR',
-      symbol: 'R\$',
-    );
-
     return Scaffold(
-      backgroundColor: colorScheme.surface,
+      backgroundColor: const Color(0xFFF7F7F7),
       drawer: _buildDrawer(context),
-      appBar: AppBar(
-        backgroundColor: colorScheme.surface,
-        elevation: 0,
-        scrolledUnderElevation: 1,
-        title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: InputDecoration(
-                  hintText: 'Pesquisar...',
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(color: colorScheme.onSurface.withAlpha(150)),
-                ),
-                style: TextStyle(color: colorScheme.onSurface),
-                onChanged: (value) {
-                  setState(() {
-                    _searchQuery = value.toLowerCase();
-                  });
-                },
-              )
-            : Text(
-                'Minhas Compras',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: colorScheme.onSurface,
-                ),
-              ),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.refresh, color: colorScheme.onSurfaceVariant),
-            onPressed: () {
-              Provider.of<AppState>(context, listen: false).forceSyncDown();
-            },
-          ),
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search, color: colorScheme.onSurfaceVariant),
-            onPressed: () {
-              setState(() {
-                if (_isSearching) {
-                  _isSearching = false;
-                  _searchQuery = '';
-                  _searchController.clear();
-                } else {
-                  _isSearching = true;
-                }
-              });
-            },
-          ),
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: colorScheme.onSurfaceVariant),
-            onSelected: (value) async {
-              if (value == 'clear') {
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Limpar dados'),
-                    content: const Text(
-                      'Isso irá apagar TODOS os produtos e compras. Prosseguir?',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text('Cancelar'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        child: Text(
-                          'Apagar',
-                          style: TextStyle(color: colorScheme.error),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirm == true && context.mounted) {
-                  await Provider.of<AppState>(
-                    context,
-                    listen: false,
-                  ).clearAllData();
-                }
-              }
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: 'clear',
-                child: Text('🗑️ Limpar todos os dados'),
-              ),
-            ],
-          ),
-        ],
-      ),
+      appBar: (_currentIndex == 0 || _currentIndex == 2) ? null : _buildAppBar(),
       body: Consumer<AppState>(
         builder: (context, appState, child) {
           if (appState.isLoading) {
-            return Center(
-              child: CircularProgressIndicator(color: colorScheme.primary),
-            );
+            return const Center(child: CircularProgressIndicator());
           }
 
           if (appState.errorMessage.isNotEmpty) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(appState.errorMessage),
-                  backgroundColor: colorScheme.error,
-                ),
+                SnackBar(content: Text(appState.errorMessage), backgroundColor: Colors.red),
               );
             });
           }
 
-          final bool isLiveTab = _tabController.index == 3;
-          final double totalP =
-              isLiveTab ? appState.liveCartTotal : appState.monthlyTotal;
-
-          final DateTime now = DateTime.now();
-          final targetMonth = appState.selectedMonth ?? now.month;
-          final targetYear = appState.selectedYear ?? now.year;
-
-          final currentMonthItems = appState.latestProducts.where((p) {
-            if (p.isAvulsa) return false;
-            if (p.date == null) return false;
-            try {
-              final d = DateTime.parse(p.date!);
-              return d.month == targetMonth && d.year == targetYear;
-            } catch (_) {
-              return false;
-            }
-          }).toList();
-
-          final avulsaItems = appState.latestProducts
-              .where((p) => p.isAvulsa)
-              .toList();
-
-          List<Product> filteredLatest = appState.latestProducts;
-          List<Product> filteredMonth = currentMonthItems;
-          List<Product> filteredAvulsa = avulsaItems;
-
-          if (_searchQuery.isNotEmpty) {
-            filteredLatest = filteredLatest.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
-            filteredMonth = filteredMonth.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
-            filteredAvulsa = filteredAvulsa.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
-          }
-
-          return Column(
-            children: [
-              if (appState.syncMessage.isNotEmpty)
-                Container(
-                  width: double.infinity,
-                  color: colorScheme.primaryContainer,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 8,
-                    horizontal: 16,
-                  ),
-                  child: Text(
-                    appState.syncMessage,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: colorScheme.onPrimaryContainer,
-                      fontWeight: FontWeight.w500,
+          return SafeArea(
+            child: Column(
+              children: [
+                if (appState.syncMessage.isNotEmpty)
+                  Container(
+                    width: double.infinity,
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                    child: Text(
+                      appState.syncMessage,
+                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                      textAlign: TextAlign.center,
                     ),
-                    textAlign: TextAlign.center,
                   ),
-                ),
-              // Summary card (tappable to select month)
-              GestureDetector(
-                onTap: isLiveTab ? null : () => _showMonthSelector(context),
-                child: Container(
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors:
-                          _getCardGradientColors(totalP, appState.spendingLimit),
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: _getCardShadowColor(totalP, appState.spendingLimit)
-                            .withAlpha(100),
-                        blurRadius: 12,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            isLiveTab
-                                ? 'CARRINHO'
-                                : (appState.isViewingArchive
-                                    ? 'MÊS: ${appState.selectedMonth.toString().padLeft(2, '0')}/${appState.selectedYear}'
-                                    : 'GASTO DESTE MÊS'),
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
-                          if (!isLiveTab)
-                            const Icon(
-                              Icons.arrow_drop_down,
-                              color: Colors.white70,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          const Text(
-                            'R\$ ',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          Text(
-                            currencyFormat
-                                .format(totalP)
-                                .replaceAll('R\$', '')
-                                .trim(),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 36,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      if (!isLiveTab)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withAlpha(50),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                Icons.data_usage,
-                                color: Colors.white,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '${((totalP / appState.spendingLimit) * 100).toStringAsFixed(1)}% do limite de ${currencyFormat.format(appState.spendingLimit)}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              // TabBar
-              TabBar(
-                controller: _tabController,
-                indicatorColor: colorScheme.primary,
-                labelColor: colorScheme.primary,
-                unselectedLabelColor: colorScheme.onSurfaceVariant,
-                labelStyle: const TextStyle(fontWeight: FontWeight.bold),
-                tabs: const [
-                  Tab(text: 'Todos'),
-                  Tab(text: 'Mês'),
-                  Tab(text: 'Avulsa'),
-                  Tab(text: 'Carrinho'),
-                ],
-              ),
-              // TabBarView
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    _buildProductList(filteredLatest, currencyFormat),
-                    _buildProductList(filteredMonth, currencyFormat),
-                    _buildProductList(filteredAvulsa, currencyFormat),
-                    ShoppingModeTab(searchQuery: _searchQuery),
-                  ],
-                ),
-              ),
-            ],
+                Expanded(child: _buildBody(appState)),
+              ],
+            ),
           );
         },
       ),
-      floatingActionButton: _tabController.index == 3
-          ? null // Hide FAB in "Carrinho" mode
-          : FloatingActionButton(
-              onPressed: () {
-                final isAvulsa = _tabController.index == 2;
-                final appState = Provider.of<AppState>(context, listen: false);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ChangeNotifierProvider.value(
-                      value: appState,
-                      child: ScannerScreen(isAvulsa: isAvulsa),
-                    ),
-                  ),
-                );
-              },
-              backgroundColor: _tabController.index == 2
-                  ? Theme.of(context).colorScheme.secondary
-                  : Theme.of(context).colorScheme.primary,
-              child: const Icon(Icons.camera_alt, color: Colors.white, size: 28),
-            ),
+      bottomNavigationBar: _buildBottomNav(),
     );
   }
 
-  Widget _buildProductList(
-    List<Product> products,
-    NumberFormat currencyFormat,
-  ) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    if (products.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.receipt_long,
-              size: 80,
-              color: colorScheme.outlineVariant,
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      backgroundColor: const Color(0xFFF7F7F7),
+      elevation: 0,
+      scrolledUnderElevation: 1,
+      title: _isSearching
+          ? TextField(
+              controller: _searchController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'Pesquisar...',
+                border: InputBorder.none,
+              ),
+              onChanged: (value) => setState(() => _searchQuery = value.toLowerCase()),
+            )
+          : Text(
+              _currentIndex == 2 ? 'Carrinho' : 'Histórico',
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 16),
-            Text(
-              'Nenhum produto cadastrado.',
-              style: TextStyle(fontSize: 16, color: colorScheme.outline),
-            ),
-          ],
+      actions: [
+        IconButton(
+          icon: Icon(_isSearching ? Icons.close : Icons.search),
+          onPressed: () {
+            setState(() {
+              if (_isSearching) {
+                _isSearching = false;
+                _searchQuery = '';
+                _searchController.clear();
+              } else {
+                _isSearching = true;
+              }
+            });
+          },
         ),
-      );
+      ],
+    );
+  }
+
+  Widget _buildBody(AppState appState) {
+    if (_currentIndex == 0) {
+      return _buildDashboard(appState);
+    } else if (_currentIndex == 2) {
+      return const ShoppingModeTab();
+    } else if (_currentIndex == 3) {
+      return _buildHistoryTabbedView(appState);
+    }
+    return const SizedBox.shrink();
+  }
+
+  Widget _buildDashboard(AppState appState) {
+    final DateTime now = DateTime.now();
+    final targetMonth = appState.selectedMonth ?? now.month;
+    final targetYear = appState.selectedYear ?? now.year;
+
+    final currentMonthItems = appState.latestProducts.where((p) {
+      if (p.isAvulsa) return false;
+      if (p.date == null) return false;
+      try {
+        final d = DateTime.parse(p.date!);
+        return d.month == targetMonth && d.year == targetYear;
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+
+    List<Product> filteredMonth = currentMonthItems;
+    if (_searchQuery.isNotEmpty) {
+      filteredMonth = filteredMonth.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.only(top: 8, bottom: 80, left: 16, right: 16),
-      itemCount: products.length,
-      itemBuilder: (context, index) {
-        final product = products[index];
-        final currentImagePath = product.imagePath;
+    final currencyFormat = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$');
 
-        String purchaseDateStr = 'Data desc.';
-        if (product.date != null) {
-          try {
-            final d = DateTime.parse(product.date!);
-            final now = DateTime.now();
-            final difference = DateTime(
-              now.year,
-              now.month,
-              now.day,
-            ).difference(DateTime(d.year, d.month, d.day)).inDays;
+    return RefreshIndicator(
+      onRefresh: () async {
+        Provider.of<AppState>(context, listen: false).forceSyncDown();
+      },
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: Column(
+          children: [
+            _buildHeader(context),
+            _buildSummaryCard(appState),
+            _buildActionButtons(),
+            _buildRecentPurchases(filteredMonth, currencyFormat),
+          ],
+        ),
+      ),
+    );
+  }
 
-            if (difference == 0) {
-              purchaseDateStr = 'Hoje, ${DateFormat('HH:mm').format(d)}';
-            } else if (difference == 1) {
-              purchaseDateStr = 'Ontem, ${DateFormat('HH:mm').format(d)}';
-            } else {
-              purchaseDateStr = '$difference dias atrás';
-            }
-          } catch (_) {}
-        }
-
-        return GestureDetector(
-          onTap: () {
-            final appState = Provider.of<AppState>(context, listen: false);
-            showModalBottomSheet(
-              context: context,
-              isScrollControlled: true,
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+  Widget _buildHeader(BuildContext context) {
+    final now = DateTime.now();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              GestureDetector(
+                onTap: () => Scaffold.of(context).openDrawer(),
+                child: const CircleAvatar(
+                  radius: 24,
+                  backgroundColor: Color(0xFFE0E0E0),
+                  child: Icon(Icons.person, color: Color(0xFF757575), size: 28),
+                ),
               ),
-              builder: (ctx) => ChangeNotifierProvider.value(
-                value: appState,
-                child: ProductChartModal(productName: product.name),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('BEM-VINDO', style: TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  Text(
+                    '${_getMonthName(now.month)} ${now.year}',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF333333)),
+                  ),
+                ],
               ),
-            );
-          },
+            ],
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.notifications, color: Color(0xFFE96E4C), size: 28),
+            onSelected: (val) async {
+              if (val == 'refresh') {
+                Provider.of<AppState>(context, listen: false).forceSyncDown();
+              } else if (val == 'clear') {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Limpar dados'),
+                    content: const Text('Isso irá apagar TODOS os produtos e compras. Prosseguir?'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Apagar', style: TextStyle(color: Colors.red))),
+                    ],
+                  ),
+                );
+                if (confirm == true && context.mounted) {
+                  await Provider.of<AppState>(context, listen: false).clearAllData();
+                }
+              } else if (val == 'search') {
+                setState(() {
+                  _isSearching = true;
+                  // Searching on dashboard will be less visible without app bar
+                  // Usually search here redirects to History or opens a search overlay. We'll rely on History for searching.
+                  _currentIndex = 3;
+                });
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'search', child: Text('🔍 Pesquisar')),
+              PopupMenuItem(value: 'refresh', child: Text('🔄 Atualizar Dados')),
+              PopupMenuItem(value: 'clear', child: Text('🗑️ Limpar todos os dados')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(AppState appState) {
+    final double totalP = appState.monthlyTotal;
+    final limit = appState.spendingLimit;
+    final percentage = limit > 0 ? (totalP / limit).clamp(0.0, 1.0) : 0.0;
+    final remaining = limit > 0 ? (limit - totalP) : 0.0;
+    
+    final currencyFormat = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$');
+
+    return Column(
+      children: [
+        GestureDetector(
+          onTap: () => _showMonthSelector(context),
           child: Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
             decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: colorScheme.outlineVariant),
+              gradient: const LinearGradient(
+                colors: [Color(0xFFCE522B), Color(0xFFF9876C)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(32),
               boxShadow: [
                 BoxShadow(
-                  color: colorScheme.shadow.withAlpha(10),
-                  blurRadius: 5,
-                  offset: const Offset(0, 2),
+                  color: const Color(0xFFD64D24).withAlpha(80),
+                  blurRadius: 15,
+                  offset: const Offset(0, 8),
                 ),
               ],
             ),
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: currentImagePath == null
-                      ? Center(
-                          child: Icon(
-                            Icons.image,
-                            color: colorScheme.outline,
-                          ),
-                        )
-                      : ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.file(
-                            File(currentImagePath),
-                            fit: BoxFit.cover,
-                            width: 60,
-                            height: 60,
-                          ),
-                        ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Total Gasto', style: TextStyle(color: Colors.white, fontSize: 16)),
+                    const SizedBox(height: 8),
+                    Text(
+                      currencyFormat.format(totalP),
+                      style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900, letterSpacing: -0.5),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha(50),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        'META: ${currencyFormat.format(limit).replaceAll('R\$', 'R\$ ')}',
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                SizedBox(
+                  width: 80,
+                  height: 80,
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      Text(
-                        product.name,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: colorScheme.onSurface,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      CircularProgressIndicator(
+                        value: percentage,
+                        backgroundColor: Colors.white.withAlpha(50),
+                        valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                        strokeWidth: 8,
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        currencyFormat.format(product.unitPrice),
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: colorScheme.primary,
+                      Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text('${(percentage * 100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, height: 1.0)),
+                            const Text('USADO', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w500)),
+                          ],
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.calendar_today,
-                            size: 12,
-                            color: colorScheme.outline,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            purchaseDateStr,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: colorScheme.outline,
-                            ),
-                          ),
-                        ],
                       ),
                     ],
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: product.isAvulsa
-                        ? colorScheme.secondaryContainer
-                        : colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    product.isAvulsa ? 'AVULSA' : 'MÊS',
-                    style: TextStyle(
-                      color: product.isAvulsa
-                          ? colorScheme.onSecondaryContainer
-                          : colorScheme.onPrimaryContainer,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 10,
-                    ),
                   ),
                 ),
               ],
             ),
           ),
+        ),
+        const SizedBox(height: 16),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: limit > 0 && remaining >= 0
+              ? RichText(
+                  textAlign: TextAlign.center,
+                  text: TextSpan(
+                    style: const TextStyle(color: Color(0xFF555555), fontSize: 15, fontStyle: FontStyle.italic),
+                    children: [
+                      const TextSpan(text: 'Você ainda tem '),
+                      TextSpan(text: currencyFormat.format(remaining), style: const TextStyle(color: Color(0xFF197959), fontWeight: FontWeight.bold, fontStyle: FontStyle.normal)),
+                      const TextSpan(text: ' disponíveis para este mês.'),
+                    ],
+                  ),
+                )
+              : RichText(
+                  textAlign: TextAlign.center,
+                  text: TextSpan(
+                    style: const TextStyle(color: Color(0xFF555555), fontSize: 15, fontStyle: FontStyle.italic),
+                    children: [
+                       const TextSpan(text: 'Você ultrapassou sua meta em '),
+                       TextSpan(text: currencyFormat.format(totalP - limit), style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontStyle: FontStyle.normal)),
+                    ]
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActionButtons() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                final appState = Provider.of<AppState>(context, listen: false);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => ChangeNotifierProvider.value(value: appState, child: const ScannerScreen(isAvulsa: false))),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: const BoxDecoration(color: Color(0xFF81F9E3), shape: BoxShape.circle),
+                      child: const Icon(Icons.qr_code_scanner, color: Color(0xFF1B6A56), size: 32),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Escanear QR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF333333))),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _currentIndex = 3);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: const BoxDecoration(color: Color(0xFFFFE8E0), shape: BoxShape.circle),
+                      child: const Icon(Icons.history, color: Color(0xFFD64D24), size: 32),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Ver Histórico', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF333333))),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentPurchases(List<Product> products, NumberFormat currencyFormat) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Últimas Compras', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF333333))),
+              TextButton(
+                onPressed: () => setState(() => _currentIndex = 3),
+                child: const Text('VER TUDO', style: TextStyle(color: Color(0xFFB52323), fontWeight: FontWeight.bold, fontSize: 13, letterSpacing: 1.0)),
+              )
+            ],
+          ),
+        ),
+        if (products.isEmpty)
+           const Padding(
+             padding: EdgeInsets.symmetric(vertical: 20),
+             child: Center(child: Text('Nenhuma compra recente encontrada.', style: TextStyle(color: Colors.grey))),
+           )
+        else
+          ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: products.length > 5 ? 5 : products.length,
+            itemBuilder: (context, index) {
+              return _buildProductCard(products[index], currencyFormat);
+            },
+          ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  Widget _buildHistoryTabbedView(AppState appState) {
+    final DateTime now = DateTime.now();
+    final targetMonth = appState.selectedMonth ?? now.month;
+    final targetYear = appState.selectedYear ?? now.year;
+
+    final currentMonthItems = appState.latestProducts.where((p) {
+      if (p.isAvulsa) return false;
+      if (p.date == null) return false;
+      try {
+        final d = DateTime.parse(p.date!);
+        return d.month == targetMonth && d.year == targetYear;
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+
+    final avulsaItems = appState.latestProducts.where((p) => p.isAvulsa).toList();
+
+    List<Product> filteredLatest = appState.latestProducts;
+    List<Product> filteredMonth = currentMonthItems;
+    List<Product> filteredAvulsa = avulsaItems;
+
+    if (_searchQuery.isNotEmpty) {
+      filteredLatest = filteredLatest.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
+      filteredMonth = filteredMonth.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
+      filteredAvulsa = filteredAvulsa.where((p) => p.name.toLowerCase().contains(_searchQuery)).toList();
+    }
+
+    final currencyFormat = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$');
+
+    return Column(
+      children: [
+        TabBar(
+          controller: _tabController,
+          indicatorColor: const Color(0xFFE96E4C),
+          labelColor: const Color(0xFFE96E4C),
+          unselectedLabelColor: Colors.grey,
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold),
+          tabs: const [Tab(text: 'Todos'), Tab(text: 'Mês'), Tab(text: 'Avulsa')],
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildProductList(filteredLatest, currencyFormat),
+              _buildProductList(filteredMonth, currencyFormat),
+              _buildProductList(filteredAvulsa, currencyFormat),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProductList(List<Product> products, NumberFormat currencyFormat) {
+    if (products.isEmpty) {
+      return const Center(child: Text('Nenhum produto cadastrado.', style: TextStyle(color: Colors.grey)));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.only(top: 16, bottom: 80, left: 20, right: 20),
+      itemCount: products.length,
+      itemBuilder: (context, index) => _buildProductCard(products[index], currencyFormat),
+    );
+  }
+
+  Widget _buildProductCard(Product product, NumberFormat currencyFormat) {
+    final currentImagePath = product.imagePath;
+
+    String purchaseDateStr = 'Data desc.';
+    if (product.date != null) {
+      try {
+        final d = DateTime.parse(product.date!);
+        purchaseDateStr = '${d.day} de ${_getMonthName(d.month)}, ${d.year}';
+      } catch (_) {}
+    }
+
+    return GestureDetector(
+      onTap: () {
+        final appState = Provider.of<AppState>(context, listen: false);
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          builder: (ctx) => ChangeNotifierProvider.value(
+            value: appState,
+            child: ProductChartModal(productName: product.name),
+          ),
         );
       },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF2F4F7),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: (currentImagePath == null || !(File(currentImagePath).existsSync()))
+                  ? const Center(child: Icon(Icons.shopping_bag, color: Color(0xFF9AA0A6), size: 28))
+                  : ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Image.file(
+                        File(currentImagePath),
+                        fit: BoxFit.cover,
+                        width: 52,
+                        height: 52,
+                        errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.shopping_bag, color: Color(0xFF9AA0A6))),
+                      ),
+                    ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    product.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF333333)),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    purchaseDateStr,
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF757575)),
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  currencyFormat.format(product.unitPrice),
+                  style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF333333)),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: product.isAvulsa ? const Color(0xFFE0E0E0) : const Color(0xFF81F9E3),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    product.isAvulsa ? 'OCASIONAL' : 'COMPRA DO MÊS',
+                    style: TextStyle(
+                      color: product.isAvulsa ? const Color(0xFF555555) : const Color(0xFF1B6A56),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 9,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        boxShadow: [
+          BoxShadow(
+             color: Colors.black.withAlpha(10),
+             blurRadius: 20,
+             offset: const Offset(0, -5),
+          )
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (index) {
+            if (index == 1) {
+              final appState = Provider.of<AppState>(context, listen: false);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => ChangeNotifierProvider.value(value: appState, child: const ScannerScreen(isAvulsa: false))),
+              );
+            } else {
+              setState(() => _currentIndex = index);
+            }
+          },
+          type: BottomNavigationBarType.fixed,
+          backgroundColor: Colors.white,
+          selectedItemColor: const Color(0xFFD64D24),
+          unselectedItemColor: const Color(0xFF9E9E9E),
+          showSelectedLabels: true,
+          showUnselectedLabels: true,
+          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, height: 1.5),
+          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10, height: 1.5),
+          elevation: 0,
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.home_filled, size: 26), label: 'HOME'),
+            BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner, size: 26), label: 'SCAN'),
+            BottomNavigationBarItem(icon: Icon(Icons.shopping_cart, size: 26), label: 'CART'),
+            BottomNavigationBarItem(icon: Icon(Icons.history, size: 26), label: 'HISTORY'),
+          ],
+        ),
+      ),
     );
   }
 
   void _showMonthSelector(BuildContext context) async {
-    final colorScheme = Theme.of(context).colorScheme;
     final appState = Provider.of<AppState>(context, listen: false);
     final monthlyTotals = await DatabaseHelper.instance.getMonthlyTotalsList();
-
     if (!context.mounted) return;
 
-    final currencyFormat = NumberFormat.currency(
-      locale: 'pt_BR',
-      symbol: 'R\$',
-    );
+    final currencyFormat = NumberFormat.currency(locale: 'pt_BR', symbol: 'R\$');
 
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (BuildContext ctx) {
         return SafeArea(
           child: Column(
@@ -591,27 +706,16 @@ class _HomeScreenState extends State<HomeScreen>
                 margin: const EdgeInsets.only(top: 16, bottom: 8),
                 width: 40,
                 height: 4,
-                decoration: BoxDecoration(
-                  color: colorScheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
+                decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
               ),
               const Padding(
                 padding: EdgeInsets.all(16.0),
-                child: Text(
-                  'Selecione um Arquivo',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
+                child: Text('Selecione um Arquivo', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),
               ListTile(
-                leading: Icon(Icons.calendar_today, color: colorScheme.primary),
-                title: const Text(
-                  'Voltar para o Mês Atual',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                trailing: appState.isViewingArchive
-                    ? null
-                    : Icon(Icons.check, color: colorScheme.primary),
+                leading: const Icon(Icons.calendar_today, color: Color(0xFFD64D24)),
+                title: const Text('Voltar para o Mês Atual', style: TextStyle(fontWeight: FontWeight.bold)),
+                trailing: appState.isViewingArchive ? null : const Icon(Icons.check, color: Color(0xFFD64D24)),
                 onTap: () {
                   appState.setSelectedMonth(null, null);
                   Navigator.pop(ctx);
@@ -619,12 +723,9 @@ class _HomeScreenState extends State<HomeScreen>
               ),
               const Divider(),
               if (monthlyTotals.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(32.0),
-                  child: Text(
-                    'Nenhum histórico encontrado.',
-                    style: TextStyle(color: colorScheme.outline),
-                  ),
+                const Padding(
+                  padding: EdgeInsets.all(32.0),
+                  child: Text('Nenhum histórico encontrado.', style: TextStyle(color: Colors.grey)),
                 )
               else
                 Flexible(
@@ -635,36 +736,17 @@ class _HomeScreenState extends State<HomeScreen>
                       final item = monthlyTotals[index];
                       final String monthYear = item['month_year'] as String;
                       final double total = (item['total'] as num).toDouble();
-
                       final parts = monthYear.split('-');
                       if (parts.length != 2) return const SizedBox.shrink();
-
                       final int year = int.parse(parts[0]);
                       final int month = int.parse(parts[1]);
-
-                      final bool isSelected = appState.selectedMonth == month &&
-                          appState.selectedYear == year;
+                      final bool isSelected = appState.selectedMonth == month && appState.selectedYear == year;
 
                       return ListTile(
-                        leading: Icon(
-                          Icons.history,
-                          color: isSelected
-                              ? colorScheme.primary
-                              : colorScheme.outline,
-                        ),
-                        title: Text(
-                          '$month/$year',
-                          style: TextStyle(
-                            fontWeight: isSelected
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                          ),
-                        ),
-                        subtitle:
-                            Text('Gasto: ${currencyFormat.format(total)}'),
-                        trailing: isSelected
-                            ? Icon(Icons.check, color: colorScheme.primary)
-                            : null,
+                        leading: Icon(Icons.history, color: isSelected ? const Color(0xFFD64D24) : Colors.grey),
+                        title: Text('$month/$year', style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                        subtitle: Text('Gasto: ${currencyFormat.format(total)}'),
+                        trailing: isSelected ? const Icon(Icons.check, color: Color(0xFFD64D24)) : null,
                         onTap: () {
                           appState.setSelectedMonth(month, year);
                           Navigator.pop(ctx);
@@ -680,38 +762,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  List<Color> _getCardGradientColors(double total, double limit) {
-    if (limit <= 0) {
-      return [Colors.teal.shade400, Colors.teal.shade600];
-    }
-
-    final double percentage = total / limit;
-
-    if (percentage < 0.75) {
-      // Comfort Zone — green
-      return [Colors.teal.shade400, Colors.teal.shade600];
-    } else if (percentage < 1.0) {
-      // Alert Zone — orange
-      return [Colors.orange.shade400, Colors.orange.shade600];
-    } else {
-      // Danger Zone — red
-      return [Colors.red.shade600, Colors.red.shade800];
-    }
-  }
-
-  Color _getCardShadowColor(double total, double limit) {
-    if (limit <= 0) return Colors.teal;
-
-    final double percentage = total / limit;
-
-    if (percentage < 0.75) return Colors.teal;
-    if (percentage < 1.0) return Colors.orange;
-    return Colors.red;
-  }
-
   Widget _buildDrawer(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
     return Drawer(
       child: Consumer2<AppState, AuthState>(
         builder: (context, appState, authState, child) {
@@ -719,12 +770,9 @@ class _HomeScreenState extends State<HomeScreen>
             padding: EdgeInsets.zero,
             children: [
               DrawerHeader(
-                decoration: BoxDecoration(
+                decoration: const BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [
-                      colorScheme.primary,
-                      colorScheme.primaryContainer,
-                    ],
+                    colors: [Color(0xFFCE522B), Color(0xFFF9876C)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -735,37 +783,23 @@ class _HomeScreenState extends State<HomeScreen>
                   children: [
                     CircleAvatar(
                       radius: 24,
-                      backgroundColor: colorScheme.onPrimary.withAlpha(40),
-                      child: Icon(
-                        Icons.person,
-                        color: colorScheme.onPrimary,
-                        size: 28,
-                      ),
+                      backgroundColor: Colors.white.withAlpha(50),
+                      child: const Icon(Icons.person, color: Colors.white, size: 28),
                     ),
                     const SizedBox(height: 12),
                     Text(
                       authState.userEmail ?? 'Usuário',
-                      style: TextStyle(
-                        color: colorScheme.onPrimary,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      'MercadoApp',
-                      style: TextStyle(
-                        color: colorScheme.onPrimary.withAlpha(180),
-                        fontSize: 12,
-                      ),
-                    ),
+                    Text('MercadoApp', style: TextStyle(color: Colors.white.withAlpha(180), fontSize: 12)),
                   ],
                 ),
               ),
               ListTile(
-                leading: Icon(Icons.settings, color: colorScheme.primary),
+                leading: const Icon(Icons.settings, color: Color(0xFFD64D24)),
                 title: const Text('Configurações de Meta'),
                 subtitle: const Text('Defina seu limite de gastos mensal'),
                 onTap: () {
@@ -773,14 +807,10 @@ class _HomeScreenState extends State<HomeScreen>
                   _showSettingsDialog(context, appState);
                 },
               ),
-
               const Divider(),
               ListTile(
-                leading: Icon(Icons.logout, color: colorScheme.error),
-                title: Text(
-                  'Sair',
-                  style: TextStyle(color: colorScheme.error),
-                ),
+                leading: const Icon(Icons.logout, color: Colors.red),
+                title: const Text('Sair', style: TextStyle(color: Colors.red)),
                 onTap: () async {
                   Navigator.pop(context);
                   await authState.logout();
@@ -794,10 +824,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _showSettingsDialog(BuildContext context, AppState appState) {
-    final TextEditingController limitController = TextEditingController(
-      text: appState.spendingLimit.toStringAsFixed(2),
-    );
-
+    final TextEditingController limitController = TextEditingController(text: appState.spendingLimit.toStringAsFixed(2));
     showDialog(
       context: context,
       builder: (ctx) {
@@ -806,33 +833,20 @@ class _HomeScreenState extends State<HomeScreen>
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                'Defina um valor máximo desejado para suas compras no mês. O card na tela inicial mudará de cor conforme você se aproxima desse limite.',
-                style: TextStyle(fontSize: 14),
-              ),
+              const Text('Defina um valor máximo desejado para suas compras no mês.', style: TextStyle(fontSize: 14)),
               const SizedBox(height: 16),
               TextField(
                 controller: limitController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Limite Mensal (R\$)',
-                  border: OutlineInputBorder(),
-                  prefixText: 'R\$ ',
-                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Limite Mensal (R\$)', border: OutlineInputBorder(), prefixText: 'R\$ '),
               ),
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancelar'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
             FilledButton(
               onPressed: () {
-                final double? newLimit = double.tryParse(
-                  limitController.text.replaceAll(',', '.'),
-                );
+                final double? newLimit = double.tryParse(limitController.text.replaceAll(',', '.'));
                 if (newLimit != null && newLimit > 0) {
                   appState.setSpendingLimit(newLimit);
                   Navigator.pop(ctx);
